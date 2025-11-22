@@ -50,17 +50,35 @@ fi
 log_info "Starting GPU tuning setup..."
 echo "=================================================="
 
+# Detect number of GPUs
+NUM_GPUS=$(nvidia-smi --query-gpu=count --format=csv,noheader | head -1)
+log_info "Detected ${NUM_GPUS} GPU(s) in the system"
+
 # Save current GPU settings to file
 log_info "Saving current GPU settings to ${SETTINGS_FILE}..."
 ORIGINAL_PERSISTENCE=$(nvidia-smi -i ${GPU_ID} --query-gpu=persistence_mode --format=csv,noheader)
 ORIGINAL_POWER=$(nvidia-smi -i ${GPU_ID} --query-gpu=power.limit --format=csv,noheader,nounits)
 
+# Save current CUDA_VISIBLE_DEVICES setting
+if [ -z "$CUDA_VISIBLE_DEVICES" ]; then
+    ORIGINAL_CUDA_VISIBLE_DEVICES="all"
+else
+    ORIGINAL_CUDA_VISIBLE_DEVICES="$CUDA_VISIBLE_DEVICES"
+fi
+
 echo "GPU_ID=${GPU_ID}" > ${SETTINGS_FILE}
+echo "NUM_GPUS=${NUM_GPUS}" >> ${SETTINGS_FILE}
 echo "ORIGINAL_PERSISTENCE=${ORIGINAL_PERSISTENCE}" >> ${SETTINGS_FILE}
 echo "ORIGINAL_POWER=${ORIGINAL_POWER}" >> ${SETTINGS_FILE}
+echo "ORIGINAL_CUDA_VISIBLE_DEVICES=${ORIGINAL_CUDA_VISIBLE_DEVICES}" >> ${SETTINGS_FILE}
 
 log_info "Current persistence mode: ${ORIGINAL_PERSISTENCE}"
 log_info "Current power limit: ${ORIGINAL_POWER}W"
+log_info "Current CUDA_VISIBLE_DEVICES: ${ORIGINAL_CUDA_VISIBLE_DEVICES}"
+
+if [ "$NUM_GPUS" -gt 1 ]; then
+    log_warn "Multiple GPUs detected. Only GPU ${GPU_ID} will be visible during tuning."
+fi
 
 # Get max supported clocks
 log_info "Detecting maximum GPU clocks..."
@@ -116,13 +134,16 @@ echo "=================================================="
 log_info "Starting TVM Conv2D tuning..."
 echo "=================================================="
 
-exit 0
+
+# Set CUDA_VISIBLE_DEVICES to only use GPU 0
+export CUDA_VISIBLE_DEVICES=${GPU_ID}
+log_info "Setting CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} (only GPU ${GPU_ID} will be visible)"
 
 # Run the tuning script (as the original user, not root)
 ORIGINAL_USER=$(logname 2>/dev/null || echo $SUDO_USER)
 if [ -n "$ORIGINAL_USER" ]; then
     log_info "Running as user: ${ORIGINAL_USER}"
-    su - ${ORIGINAL_USER} -c "cd $(pwd) && python ${SCRIPT_NAME}"
+    su - ${ORIGINAL_USER} -c "cd $(pwd) && export CUDA_VISIBLE_DEVICES=${GPU_ID} && python ${SCRIPT_NAME}"
 else
     log_warn "Could not detect original user, running as root"
     python ${SCRIPT_NAME}

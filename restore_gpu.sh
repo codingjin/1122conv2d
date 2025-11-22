@@ -54,8 +54,10 @@ echo "=================================================="
 source ${SETTINGS_FILE}
 
 log_info "GPU ID: ${GPU_ID}"
+log_info "Number of GPUs: ${NUM_GPUS}"
 log_info "Original persistence mode: ${ORIGINAL_PERSISTENCE}"
 log_info "Original power limit: ${ORIGINAL_POWER}W"
+log_info "Original CUDA_VISIBLE_DEVICES: ${ORIGINAL_CUDA_VISIBLE_DEVICES}"
 
 echo "=================================================="
 
@@ -90,10 +92,28 @@ echo "=================================================="
 # Show current GPU status
 nvidia-smi -i ${GPU_ID}
 
+# Restore CUDA_VISIBLE_DEVICES information
+echo ""
+log_info "CUDA_VISIBLE_DEVICES restoration:"
+if [ "$ORIGINAL_CUDA_VISIBLE_DEVICES" = "all" ]; then
+    log_info "CUDA_VISIBLE_DEVICES was not set (all GPUs were visible)"
+    log_info "To restore: unset CUDA_VISIBLE_DEVICES"
+else
+    log_info "CUDA_VISIBLE_DEVICES was set to: ${ORIGINAL_CUDA_VISIBLE_DEVICES}"
+    log_info "To restore in your shell: export CUDA_VISIBLE_DEVICES=${ORIGINAL_CUDA_VISIBLE_DEVICES}"
+fi
+
 # Clean up settings file
 log_info "Removing backup file ${SETTINGS_FILE}..."
 rm -f ${SETTINGS_FILE}
 log_info "✓ Backup file removed"
 
 echo ""
+echo "=================================================="
 log_info "GPU restoration complete!"
+echo "=================================================="
+
+if [ "$NUM_GPUS" -gt 1 ]; then
+    echo ""
+    log_info "All ${NUM_GPUS} GPU(s) are now accessible again."
+fi
