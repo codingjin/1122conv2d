@@ -63,31 +63,20 @@ target = tvm.target.Target("cuda")
 
 # Parse command-line arguments
 parser = argparse.ArgumentParser(description='Generate CUDA kernels from TVM tuning results and measure energy consumption')
-parser.add_argument('--test', action='store_true',
-                    help='Test mode: 10 lrounds × 100 rounds × 1000 iterations = 1M kernels. Default: 100 lrounds × 100 rounds × 1000 iterations = 10M kernels')
 args = parser.parse_args()
 
-# Configure measurement parameters based on mode
-if args.test:
-    num_lrounds = 10
-    num_rounds = 100
-    mode_name = "TEST MODE"
-    total_executions = num_lrounds * num_rounds * 1000
-    print("\n" + "="*80)
-    print("  RUNNING IN TEST MODE")
-    print(f"  Energy measurement: {num_lrounds} lrounds × {num_rounds} rounds × 1000 iterations = {total_executions:,} kernel executions")
-    print("  This is 10x faster than full mode (for quick testing)")
-    print("="*80 + "\n")
-else:
-    num_lrounds = 100
-    num_rounds = 100
-    mode_name = "FULL MODE"
-    total_executions = num_lrounds * num_rounds * 1000
-    print("\n" + "="*80)
-    print("  RUNNING IN FULL MEASUREMENT MODE")
-    print(f"  Energy measurement: {num_lrounds} lrounds × {num_rounds} rounds × 1000 iterations = {total_executions:,} kernel executions")
-    print("  Use --test flag for faster testing (10 lrounds)")
-    print("="*80 + "\n")
+# Fixed measurement parameters (no test/full mode distinction)
+num_lrounds = 10
+num_rounds = 100
+total_executions = num_lrounds * num_rounds * 1000
+
+print("\n" + "="*80)
+print("  ENERGY MEASUREMENT CONFIGURATION")
+print(f"  Large rounds (lrounds): {num_lrounds}")
+print(f"  Target executions per lround: 100,000 (adaptive: iteration × round)")
+print(f"  Total target executions per kernel: {total_executions:,}")
+print(f"  Note: iteration ∈ {{1000, 100, 10}} adjusted based on GPU memory")
+print("="*80 + "\n")
 
 # Find all JSON files in ../tuningresults/ directory
 tuning_results_dir = "../tuningresults"
@@ -143,6 +132,10 @@ layer_kernel_mapping = {}  # Maps layer_id -> list of kernel indices
 # Global kernel index across all files
 global_kernel_idx = 0
 
+# Statistics tracking
+total_configs_processed = 0
+total_configs_skipped = 0
+
 # Process each JSON file
 for file_idx, json_file in enumerate(json_files):
     layer_id = extract_layer_name_from_filename(json_file)
@@ -175,13 +168,27 @@ for file_idx, json_file in enumerate(json_files):
 
     # Process each line in the current JSON file
     for config_idx, line in enumerate(all_config):
+        total_configs_processed += 1
+
+        # Extract GPU architecture and execution time first (before extracting workload params)
+        data = json.loads(line)
+
+        # Extract execution time from the record (ALREADY in milliseconds)
+        exec_time_ms = data['r'][0][0]  # In milliseconds
+
+        # CRITICAL: Filter out invalid configurations (failed tuning attempts)
+        # TVM marks failed configs with execution time = 1e+10 ms (essentially infinity)
+        if exec_time_ms >= 1e9:  # Use 1e9 as threshold to catch 1e+10 and similar large values
+            print(f"  Config {config_idx+1}/{len(all_config)} -> SKIPPED (invalid: exec_time={exec_time_ms:.2e} ms)")
+            total_configs_skipped += 1
+            continue
+
         N, H, W, CO, CI, KH, KW, strides, padding = extract_values_from_json(line)
 
         print(f"  Config {config_idx+1}/{len(all_config)} -> kernel{global_kernel_idx}")
         print(f"    Conv2D: N={N} H={H} W={W} CO={CO} CI={CI} KH={KH} KW={KW} stride={strides} pad={padding}")
 
         # Extract GPU architecture from target string
-        data = json.loads(line)
         target_str = data['i'][0][1]  # e.g., "cuda -keys=cuda,gpu -arch=sm_89 ..."
         gpu_arch = "sm_75"  # default fallback
         if "-arch=sm_" in target_str:
@@ -191,9 +198,6 @@ for file_idx, json_file in enumerate(json_files):
             if arch_end == -1:
                 arch_end = len(target_str)
             gpu_arch = "sm_" + target_str[arch_start:arch_end]
-
-        # Extract execution time from the record
-        exec_time_ms = data['r'][0][0] * 1000  # Convert to milliseconds
 
         # Store GPU architecture for CMakeLists.txt generation
         kernel_gpu_archs.append(gpu_arch)
@@ -312,11 +316,7 @@ cd "$PROJECT_ROOT"
 
         new_lines = []
         for line_content in lines:
-            # Replace num_lrounds based on test mode
-            if "const int num_lrounds = 1000;" in line_content:
-                new_lines.append(f"                        const int num_lrounds = {num_lrounds};  // {mode_name}\n")
-            else:
-                new_lines.append(line_content)
+            new_lines.append(line_content)
 
             if "// insert headers here" in line_content:
                 # insert #include "kernel{global_kernel_idx}.cuh"
@@ -490,8 +490,15 @@ echo "Batch {batch_idx} completed!"
 print(f"\nGeneration complete!")
 print(f"{'='*80}")
 print(f"Summary:")
-print(f"  - Mode: {mode_name}")
-print(f"  - Energy measurement: {num_lrounds} lrounds × {num_rounds} rounds × 1000 iterations = {total_executions:,} kernels")
+print(f"  - Energy measurement: {num_lrounds} lrounds × 100,000 executions per lround = {total_executions:,} total")
+print(f"")
+print(f"Configuration filtering:")
+print(f"  - Total configs processed: {total_configs_processed}")
+print(f"  - Valid configs (generated): {total_kernels}")
+print(f"  - Invalid configs (skipped): {total_configs_skipped}")
+print(f"  - Success rate: {100.0 * total_kernels / total_configs_processed:.1f}%")
+print(f"")
+print(f"Kernel statistics:")
 print(f"  - Total kernels generated: {total_kernels}")
 print(f"  - Total layers: {len(json_files)}")
 print(f"  - Kernels per layer: ~{total_kernels // len(json_files)}")
@@ -520,14 +527,6 @@ print(f"")
 print(f"Batch scripts: run_batch_0.sh through run_batch_{num_batches-1}.sh")
 print(f"Master script: run_all.sh")
 print(f"Metadata: {metadata_csv_path}")
-print(f"")
-if args.test:
-    print(f"{'='*80}")
-    print(f"  TEST MODE ACTIVE")
-    print(f"  Each kernel will run ONLY 1 round (1,000 executions)")
-    print(f"  Perfect for quick validation of the pipeline")
-    print(f"  For full energy measurement, run without --test flag")
-    print(f"{'='*80}")
 print(f"")
 print(f"To build and run:")
 print(f"  Single kernel:  bash scripts/<layer_id>/run_kernel<N>.sh")

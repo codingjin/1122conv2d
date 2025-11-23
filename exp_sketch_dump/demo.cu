@@ -20,8 +20,78 @@ void conv_kernel_wrapper(int N_B, int N_C, int N_H, int N_W, int N_F, int N_R, i
                         size_t kernel_size_per_iter = sizeof(float) * N_F * N_C * N_R * N_S;
                         size_t output_size_per_iter = sizeof(float) * N_B * N_F * N_Y * N_X;
 
+                        // Query available GPU memory
+                        size_t free_mem, total_mem;
+                        CHECK(cudaMemGetInfo(&free_mem, &total_mem));
+
+                        // Calculate total memory needed for all iterations
+                        size_t memory_per_iter = input_size_per_iter + kernel_size_per_iter + output_size_per_iter;
+                        size_t total_memory_needed = memory_per_iter * itr;
+
+                        // Use at most 80% of free memory to leave room for other allocations
+                        size_t max_usable_memory = (size_t)(free_mem * 0.8);
+
+                        // CRITICAL: Iteration values must be discrete {1000, 100, 10} for consistent comparison
+                        // Try iteration values in order: 1000 -> 100 -> 10
+                        int iteration_candidates[] = {1000, 100, 10};
+                        int num_candidates = 3;
+                        int original_itr = itr;
+                        bool memory_adjusted = false;
+
+                        for (int i = 0; i < num_candidates; i++) {
+                            int candidate = iteration_candidates[i];
+                            size_t needed = memory_per_iter * candidate;
+
+                            if (needed <= max_usable_memory) {
+                                if (candidate < original_itr) {
+                                    itr = candidate;
+                                    memory_adjusted = true;
+                                    printf("WARNING: Requested memory (%.2f GB) exceeds available GPU memory (%.2f GB free)\n",
+                                           (double)total_memory_needed / (1024*1024*1024),
+                                           (double)free_mem / (1024*1024*1024));
+                                    printf("Reducing iterations from %d to %d to fit in memory\n", original_itr, itr);
+                                    printf("Memory per iteration: %.2f MB\n", (double)memory_per_iter / (1024*1024));
+                                }
+                                break;
+                            }
+                        }
+
+                        // Check if even minimum iteration count (10) doesn't fit
+                        if (memory_per_iter * 10 > max_usable_memory) {
+                            fprintf(stderr, "ERROR: Even with 10 iterations, memory requirement (%.2f GB) exceeds available GPU memory (%.2f GB)\n",
+                                    (double)(memory_per_iter * 10) / (1024*1024*1024),
+                                    (double)free_mem / (1024*1024*1024));
+                            fprintf(stderr, "This kernel requires %.2f MB per iteration but GPU only has %.2f GB free\n",
+                                    (double)memory_per_iter / (1024*1024),
+                                    (double)free_mem / (1024*1024*1024));
+                            exit(1);
+                        }
+
+                        if (memory_adjusted) {
+                            fflush(stdout);
+                        }
+
+                        // CRITICAL: Maintain constant total executions per lround (iteration × round = 100,000)
+                        // This ensures fair comparison across all kernels regardless of memory constraints
+                        const int TARGET_EXECUTIONS_PER_LROUND = 100000;
+                        int num_rounds = TARGET_EXECUTIONS_PER_LROUND / itr;
+
+                        // Sanity check: ensure num_rounds is reasonable
+                        if (num_rounds < 1) num_rounds = 1;
+                        if (num_rounds > 100000) num_rounds = 100000;  // Cap at 100k rounds
+
+                        int actual_executions_per_lround = num_rounds * itr;
+
+                        printf("Adjusted measurement parameters to maintain constant workload:\n");
+                        printf("  Iterations per round: %d\n", itr);
+                        printf("  Rounds per lround: %d\n", num_rounds);
+                        printf("  Total executions per lround: %d (target: %d)\n",
+                               actual_executions_per_lround, TARGET_EXECUTIONS_PER_LROUND);
+                        fflush(stdout);
+
                         // Allocate GPU memory for ALL iterations upfront
-                        printf("Allocating GPU memory for %d iterations...\n", itr);
+                        printf("Allocating GPU memory for %d iterations (%.2f GB total)...\n",
+                               itr, (double)(memory_per_iter * itr) / (1024*1024*1024));
                         CHECK(cudaMalloc(&dev_Input_all, input_size_per_iter * itr));
                         CHECK(cudaMalloc(&dev_Kernel_all, kernel_size_per_iter * itr));
                         CHECK(cudaMalloc(&dev_Output_all, output_size_per_iter * itr));
@@ -50,8 +120,7 @@ void conv_kernel_wrapper(int N_B, int N_C, int N_H, int N_W, int N_F, int N_R, i
                             fprintf(stderr, "Failed to get NVML device handle: %s\n", nvmlErrorString(nvml_result));
                         }
 
-                        const int num_lrounds = 1000;  // Will be replaced by Python script (10 or 100)
-                        const int num_rounds = 100;    // Fixed for both modes
+                        const int num_lrounds = 10;  // Fixed: 10 large rounds for all kernels
 
                         printf("Running %d large rounds, each with %d rounds × %d iterations...\n", num_lrounds, num_rounds, itr);
                         printf("Total executions: %lld kernels\n", (long long)num_lrounds * num_rounds * itr);
