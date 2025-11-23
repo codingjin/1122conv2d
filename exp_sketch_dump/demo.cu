@@ -103,6 +103,20 @@ void conv_kernel_wrapper(int N_B, int N_C, int N_H, int N_W, int N_F, int N_R, i
                         CHECK(cudaMemset(dev_Output_all, 0, output_size_per_iter * itr));
                         CHECK(cudaDeviceSynchronize());
 
+                        // Warm-up: Execute kernels once before measurement (more scientific)
+                        printf("Performing warm-up round (%d iterations)...\n", itr);
+                        for (int i = 0; i < itr; i++) {
+                            // Calculate GPU memory offsets for this iteration
+                            float *dev_input_ptr = dev_Input_all + i * N_B * N_C * N_H * N_W;
+                            float *dev_kernel_ptr = dev_Kernel_all + i * N_F * N_C * N_R * N_S;
+                            float *dev_output_ptr = dev_Output_all + i * N_B * N_F * N_Y * N_X;
+
+                    // insert kernel call here
+
+                        }
+                        CHECK(cudaDeviceSynchronize());
+                        printf("Warm-up completed.\n");
+
                         printf("GPU memory setup complete. Starting energy measurement...\n");
                         fflush(stdout);
 
@@ -120,7 +134,7 @@ void conv_kernel_wrapper(int N_B, int N_C, int N_H, int N_W, int N_F, int N_R, i
                             fprintf(stderr, "Failed to get NVML device handle: %s\n", nvmlErrorString(nvml_result));
                         }
 
-                        const int num_lrounds = 10;  // Fixed: 10 large rounds for all kernels
+                        const int num_lrounds = 30;  // Fixed: 30 large rounds for all kernels
 
                         printf("Running %d large rounds, each with %d rounds × %d iterations...\n", num_lrounds, num_rounds, itr);
                         printf("Total executions: %lld kernels\n", (long long)num_lrounds * num_rounds * itr);

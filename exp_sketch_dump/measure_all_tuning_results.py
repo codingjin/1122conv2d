@@ -66,7 +66,7 @@ parser = argparse.ArgumentParser(description='Generate CUDA kernels from TVM tun
 args = parser.parse_args()
 
 # Fixed measurement parameters (no test/full mode distinction)
-num_lrounds = 10
+num_lrounds = 30
 num_rounds = 100
 total_executions = num_lrounds * num_rounds * 1000
 
