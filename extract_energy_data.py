@@ -213,21 +213,22 @@ def process_layer(layer_id, kernel_output_dir, performance_dir, output_csv_path,
             continue
 
         # Add to CSV data (use config_idx as the id for ordering)
+        # Round energy to 3 decimal places
         csv_data.append({
-            'id': config_idx,
+            'kernel_id': config_idx,
             'perf(GFLOPS)': perf_gflops,
-            'Energy(mj)': energy_mj,
+            'Energy(mJ)': round(energy_mj, 3),
             'std/mean(%)': std_mean_percent
         })
         valid_count += 1
 
-    # Sort by id (config_idx) to maintain order
-    csv_data.sort(key=lambda x: x['id'])
+    # Sort by kernel_id (config_idx) to maintain order
+    csv_data.sort(key=lambda x: x['kernel_id'])
 
     # Write CSV file
     if csv_data:
         with open(output_csv_path, 'w', newline='') as csvfile:
-            fieldnames = ['id', 'perf(GFLOPS)', 'Energy(mj)', 'std/mean(%)']
+            fieldnames = ['kernel_id', 'perf(GFLOPS)', 'Energy(mJ)', 'std/mean(%)']
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
 
             writer.writeheader()
